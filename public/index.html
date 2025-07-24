@@ -80,8 +80,6 @@
 
         /**
          * 格式化日期時間為 API 需要的字串格式 (YYYY-MM-DD HH:mm:ss)
-         * @param {Date} date - 日期物件
-         * @returns {string} 格式化後的字串
          */
         function formatDateTime(date) {
             const YYYY = date.getFullYear();
@@ -94,56 +92,8 @@
         }
 
         /**
-         * 根據一個目標時間戳，獲取最接近的數據點的值
-         * @param {Date} targetDate - 目標時間
-         * @returns {Promise<number|null>} 數據點的值，或 null
-         */
-        async function fetchClosestValue(targetDate) {
-            // 建立一個 ±5 分鐘的時間窗口來查詢 API
-            const startDate = new Date(targetDate.getTime() - 5 * 60 * 1000);
-            const endDate = new Date(targetDate.getTime() + 5 * 60 * 1000);
-
-            // 組合查詢參數
-            const params = new URLSearchParams({
-                ...API_PARAMS,
-                start: formatDateTime(startDate),
-                end: formatDateTime(endDate),
-                order: 'asc'
-            });
-            
-            // 呼叫我們自己的代理伺服器
-            const response = await fetch(`/api/proxy?${params.toString()}`);
-            if (!response.ok) {
-                console.error('API request failed:', await response.text());
-                return null;
-            }
-
-            const result = await response.json();
-            if (result.code !== 0 || !result.data || !result.data.dss || result.data.dss.length === 0) {
-                return null;
-            }
-
-            const points = result.data.dss[0].dps;
-            if (!points || points.length === 0) {
-                return null;
-            }
-
-            // 從回傳的數據點中，找出時間戳最接近目標時間的那個
-            let closestPoint = points[0];
-            let minDiff = Math.abs(closestPoint.at * 1000 - targetDate.getTime());
-
-            for (let i = 1; i < points.length; i++) {
-                const diff = Math.abs(points[i].at * 1000 - targetDate.getTime());
-                if (diff < minDiff) {
-                    minDiff = diff;
-                    closestPoint = points[i];
-                }
-            }
-            return closestPoint.value;
-        }
-
-        /**
-         * 計算一天的用電量
+         * 【智能計算函式】
+         * 獲取指定日期和時間範圍內的所有數據點，並計算用電量差異。
          * @param {Date} day - 目標日期 (例如今天或昨天)
          * @param {string} startTimeStr - 開始時間字串 (HH:mm)
          * @param {string} endTimeStr - 結束時間字串 (HH:mm)
@@ -159,16 +109,39 @@
             const endDate = new Date(day);
             endDate.setHours(endHour, endMinute, 59, 999);
 
-            // 平行發送兩個請求，以提高效率
-            const [startValue, endValue] = await Promise.all([
-                fetchClosestValue(startDate),
-                fetchClosestValue(endDate)
-            ]);
+            // 組合查詢參數，這次我們請求整個時間範圍的數據
+            const params = new URLSearchParams({
+                ...API_PARAMS,
+                start: formatDateTime(startDate),
+                end: formatDateTime(endDate),
+                order: 'asc' // 確保數據按時間順序排列
+            });
 
-            if (startValue !== null && endValue !== null) {
-                return endValue - startValue;
+            // 呼叫我們自己的代理伺服器
+            const response = await fetch(`/api/proxy?${params.toString()}`);
+            if (!response.ok) {
+                console.error('API request failed:', await response.text());
+                return 0;
             }
-            return 0;
+
+            const result = await response.json();
+            if (result.code !== 0 || !result.data || !result.data.dss || result.data.dss.length === 0) {
+                console.log(`在 ${day.toLocaleDateString()} 的指定時間內沒有找到數據。`);
+                return 0;
+            }
+
+            const points = result.data.dss[0].dps;
+            // 如果數據點少於 2 個，無法計算差異
+            if (!points || points.length < 2) {
+                console.log(`在 ${day.toLocaleDateString()} 的指定時間內數據點不足 (<2)。`);
+                return 0;
+            }
+
+            // 直接用第一筆和最後一筆數據計算，因為 API 已按時間排序
+            const startValue = points[0].value;
+            const endValue = points[points.length - 1].value;
+
+            return endValue - startValue;
         }
 
         /**
@@ -184,13 +157,14 @@
             yesterday.setDate(yesterday.getDate() - 1);
 
             try {
+                // 使用新的智能計算函式來獲取數據
                 const [todayUsage, yesterdayUsage] = await Promise.all([
                     getUsageForDay(today, todayStartTimeInput.value, todayEndTimeInput.value),
                     getUsageForDay(yesterday, yesterdayStartTimeInput.value, yesterdayEndTimeInput.value)
                 ]);
 
-                todayValueElement.textContent = todayUsage.toFixed(2);
-                yesterdayValueElement.textContent = yesterdayUsage.toFixed(2);
+                todayValueElement.textContent = todayUsage > 0 ? todayUsage.toFixed(2) : '0.00';
+                yesterdayValueElement.textContent = yesterdayUsage > 0 ? yesterdayUsage.toFixed(2) : '0.00';
                 
                 const now = new Date();
                 currentTimeElement.textContent = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
