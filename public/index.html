@@ -92,56 +92,46 @@
         }
 
         /**
-         * 【智能計算函式】
-         * 獲取指定日期和時間範圍內的所有數據點，並計算用電量差異。
-         * @param {Date} day - 目標日期 (例如今天或昨天)
-         * @param {string} startTimeStr - 開始時間字串 (HH:mm)
-         * @param {string} endTimeStr - 結束時間字串 (HH:mm)
+         * 【統一計算函式】
+         * 獲取指定時間範圍內的所有數據點，並用最後一個點減去第一個點。
+         * @param {Date} startDate - 查詢的開始時間
+         * @param {Date} endDate - 查詢的結束時間
          * @returns {Promise<number>} 計算出的用電量
          */
-        async function getUsageForDay(day, startTimeStr, endTimeStr) {
-            const [startHour, startMinute] = startTimeStr.split(':').map(Number);
-            const [endHour, endMinute] = endTimeStr.split(':').map(Number);
+        async function getUsageForRange(startDate, endDate) {
+            // 如果開始時間晚於結束時間，直接回傳 0，避免無效查詢
+            if (startDate >= endDate) {
+                return 0;
+            }
 
-            const startDate = new Date(day);
-            startDate.setHours(startHour, startMinute, 0, 0);
-
-            const endDate = new Date(day);
-            endDate.setHours(endHour, endMinute, 59, 999);
-
-            // 組合查詢參數，這次我們請求整個時間範圍的數據
             const params = new URLSearchParams({
                 ...API_PARAMS,
                 start: formatDateTime(startDate),
                 end: formatDateTime(endDate),
-                order: 'asc' // 確保數據按時間順序排列
+                order: 'asc'
             });
 
-            // 呼叫我們自己的代理伺服器
             const response = await fetch(`/api/proxy?${params.toString()}`);
             if (!response.ok) {
-                console.error('API request failed:', await response.text());
+                console.error(`API request failed for range ${startDate.toLocaleString()} to ${endDate.toLocaleString()}:`, await response.text());
                 return 0;
             }
 
             const result = await response.json();
             if (result.code !== 0 || !result.data || !result.data.dss || result.data.dss.length === 0) {
-                console.log(`在 ${day.toLocaleDateString()} 的指定時間內沒有找到數據。`);
                 return 0;
             }
 
             const points = result.data.dss[0].dps;
-            // 如果數據點少於 2 個，無法計算差異
             if (!points || points.length < 2) {
-                console.log(`在 ${day.toLocaleDateString()} 的指定時間內數據點不足 (<2)。`);
                 return 0;
             }
 
-            // 直接用第一筆和最後一筆數據計算，因為 API 已按時間排序
             const startValue = points[0].value;
             const endValue = points[points.length - 1].value;
-
-            return endValue - startValue;
+            
+            const usage = endValue - startValue;
+            return usage > 0 ? usage : 0;
         }
 
         /**
@@ -152,21 +142,51 @@
             refreshButton.disabled = true;
             refreshButton.textContent = '更新中...';
 
-            const today = new Date();
+            const now = new Date();
+            
+            // --- 計算昨日用電量 (邏輯不變) ---
             const yesterday = new Date();
             yesterday.setDate(yesterday.getDate() - 1);
+            const [ystartHour, ystartMinute] = yesterdayStartTimeInput.value.split(':').map(Number);
+            const [yendHour, yendMinute] = yesterdayEndTimeInput.value.split(':').map(Number);
+            
+            const yesterdayStartDate = new Date(yesterday);
+            yesterdayStartDate.setHours(ystartHour, ystartMinute, 0, 0);
+            
+            const yesterdayEndDate = new Date(yesterday);
+            yesterdayEndDate.setHours(yendHour, yendMinute, 59, 999);
+
+            // --- 計算今日用電量 (採用新的智能邏輯) ---
+            let todayUsage = 0;
+            const [tstartHour, tstartMinute] = todayStartTimeInput.value.split(':').map(Number);
+            const [tendHour, tendMinute] = todayEndTimeInput.value.split(':').map(Number);
+
+            const todayUserStartDate = new Date(now);
+            todayUserStartDate.setHours(tstartHour, tstartMinute, 0, 0);
+
+            // 1. 檢查使用者選擇的開始時間是否已在未來
+            if (todayUserStartDate > now) {
+                todayUsage = 0; // 開始時間還未到，用電量必為 0
+            } else {
+                // 2. 確定最終的結束時間
+                const todayUserEndDate = new Date(now);
+                todayUserEndDate.setHours(tendHour, tendMinute, 59, 999);
+                
+                // 最終結束時間取「現在」和「使用者選擇的結束時間」中較早的那個
+                const finalEndDate = now < todayUserEndDate ? now : todayUserEndDate;
+
+                // 呼叫統一計算函式
+                todayUsage = await getUsageForRange(todayUserStartDate, finalEndDate);
+            }
 
             try {
-                // 使用新的智能計算函式來獲取數據
-                const [todayUsage, yesterdayUsage] = await Promise.all([
-                    getUsageForDay(today, todayStartTimeInput.value, todayEndTimeInput.value),
-                    getUsageForDay(yesterday, yesterdayStartTimeInput.value, yesterdayEndTimeInput.value)
-                ]);
+                // 昨日的計算可以獨立進行
+                const yesterdayUsage = await getUsageForRange(yesterdayStartDate, yesterdayEndDate);
 
-                todayValueElement.textContent = todayUsage > 0 ? todayUsage.toFixed(2) : '0.00';
-                yesterdayValueElement.textContent = yesterdayUsage > 0 ? yesterdayUsage.toFixed(2) : '0.00';
+                // 更新介面
+                todayValueElement.textContent = todayUsage.toFixed(2);
+                yesterdayValueElement.textContent = yesterdayUsage.toFixed(2);
                 
-                const now = new Date();
                 currentTimeElement.textContent = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
             } catch (error) {
