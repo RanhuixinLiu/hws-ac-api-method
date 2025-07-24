@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>電力數據顯示 (API 直連版)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="bg-gray-900 text-white flex items-center justify-center min-h-screen p-4">
+
+    <div class="w-full max-w-4xl mx-auto">
+        <h1 id="device-id" class="text-4xl font-bold text-center mb-10 text-cyan-400">載入中...</h1>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <div class="bg-gray-800 p-8 rounded-2xl shadow-lg border border-gray-700 flex flex-col text-center">
+                <div class="flex-grow">
+                    <h2 class="text-2xl font-semibold text-gray-400 mb-4">昨日用電量</h2>
+                    <div class="flex items-baseline justify-center">
+                        <span id="yesterday-value" class="text-6xl font-bold text-white">0.00</span>
+                        <span class="text-2xl font-medium text-gray-500 ml-2">kWh</span>
+                    </div>
+                </div>
+                <div class="mt-6 pt-6 border-t border-gray-700 flex justify-center items-center gap-2">
+                    <label for="yesterday-start-time" class="text-sm text-gray-400">由</label>
+                    <input type="time" id="yesterday-start-time" value="00:00" class="bg-gray-700 text-white rounded-md p-2 border-gray-600 focus:ring-cyan-500 focus:border-cyan-500 text-sm">
+                    <label for="yesterday-end-time" class="text-sm text-gray-400">至</label>
+                    <input type="time" id="yesterday-end-time" value="23:59" class="bg-gray-700 text-white rounded-md p-2 border-gray-600 focus:ring-cyan-500 focus:border-cyan-500 text-sm">
+                </div>
+            </div>
+
+            <div class="bg-gray-800 p-8 rounded-2xl shadow-lg border border-gray-700 flex flex-col text-center">
+                <div class="flex-grow">
+                    <h2 class="text-2xl font-semibold text-gray-400 mb-2">今日用電量</h2>
+                    <p class="text-sm text-gray-500 mb-4">(截至 <span id="current-time">--:--</span>)</p>
+                    <div class="flex items-baseline justify-center">
+                        <span id="today-value" class="text-6xl font-bold text-white">0.00</span>
+                        <span class="text-2xl font-medium text-gray-500 ml-2">kWh</span>
+                    </div>
+                </div>
+                <div class="mt-6 pt-6 border-t border-gray-700 flex justify-center items-center gap-2">
+                    <label for="today-start-time" class="text-sm text-gray-400">由</label>
+                    <input type="time" id="today-start-time" value="00:00" class="bg-gray-700 text-white rounded-md p-2 border-gray-600 focus:ring-cyan-500 focus:border-cyan-500 text-sm">
+                    <label for="today-end-time" class="text-sm text-gray-400">至</label>
+                    <input type="time" id="today-end-time" value="23:59" class="bg-gray-700 text-white rounded-md p-2 border-gray-600 focus:ring-cyan-500 focus:border-cyan-500 text-sm">
+                </div>
+            </div>
+        </div>
+
+        <div class="text-center mt-10">
+            <button id="refresh-button" class="bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-3 px-8 rounded-lg transition-colors text-lg">更新數據</button>
+        </div>
+        <p class="text-center text-gray-600 mt-4 text-sm">數據每 5 分鐘使用當前設定的時間自動刷新</p>
+    </div>
+
+    <script>
+        // --- API 參數設定 ---
+        const API_PARAMS = {
+            pid: '19833',
+            did: '48405',
+            sdid: '16959',
+            dsids: '176534'
+        };
+        const DEVICE_NAME = '冷氣機 (AirCon)';
+        // -----------------------
+
+        // 獲取頁面元素
+        const deviceIdElement = document.getElementById('device-id');
+        const yesterdayValueElement = document.getElementById('yesterday-value');
+        const todayValueElement = document.getElementById('today-value');
+        const currentTimeElement = document.getElementById('current-time');
+        const yesterdayStartTimeInput = document.getElementById('yesterday-start-time');
+        const yesterdayEndTimeInput = document.getElementById('yesterday-end-time');
+        const todayStartTimeInput = document.getElementById('today-start-time');
+        const todayEndTimeInput = document.getElementById('today-end-time');
+        const refreshButton = document.getElementById('refresh-button');
+
+        /**
+         * 格式化日期時間為 API 需要的字串格式 (YYYY-MM-DD HH:mm:ss)
+         * @param {Date} date - 日期物件
+         * @returns {string} 格式化後的字串
+         */
+        function formatDateTime(date) {
+            const YYYY = date.getFullYear();
+            const MM = String(date.getMonth() + 1).padStart(2, '0');
+            const DD = String(date.getDate()).padStart(2, '0');
+            const hh = String(date.getHours()).padStart(2, '0');
+            const mm = String(date.getMinutes()).padStart(2, '0');
+            const ss = String(date.getSeconds()).padStart(2, '0');
+            return `${YYYY}-${MM}-${DD} ${hh}:${mm}:${ss}`;
+        }
+
+        /**
+         * 根據一個目標時間戳，獲取最接近的數據點的值
+         * @param {Date} targetDate - 目標時間
+         * @returns {Promise<number|null>} 數據點的值，或 null
+         */
+        async function fetchClosestValue(targetDate) {
+            // 建立一個 ±5 分鐘的時間窗口來查詢 API
+            const startDate = new Date(targetDate.getTime() - 5 * 60 * 1000);
+            const endDate = new Date(targetDate.getTime() + 5 * 60 * 1000);
+
+            // 組合查詢參數
+            const params = new URLSearchParams({
+                ...API_PARAMS,
+                start: formatDateTime(startDate),
+                end: formatDateTime(endDate),
+                order: 'asc'
+            });
+            
+            // 呼叫我們自己的代理伺服器
+            const response = await fetch(`/api/proxy?${params.toString()}`);
+            if (!response.ok) {
+                console.error('API request failed:', await response.text());
+                return null;
+            }
+
+            const result = await response.json();
+            if (result.code !== 0 || !result.data || !result.data.dss || result.data.dss.length === 0) {
+                return null;
+            }
+
+            const points = result.data.dss[0].dps;
+            if (!points || points.length === 0) {
+                return null;
+            }
+
+            // 從回傳的數據點中，找出時間戳最接近目標時間的那個
+            let closestPoint = points[0];
+            let minDiff = Math.abs(closestPoint.at * 1000 - targetDate.getTime());
+
+            for (let i = 1; i < points.length; i++) {
+                const diff = Math.abs(points[i].at * 1000 - targetDate.getTime());
+                if (diff < minDiff) {
+                    minDiff = diff;
+                    closestPoint = points[i];
+                }
+            }
+            return closestPoint.value;
+        }
+
+        /**
+         * 計算一天的用電量
+         * @param {Date} day - 目標日期 (例如今天或昨天)
+         * @param {string} startTimeStr - 開始時間字串 (HH:mm)
+         * @param {string} endTimeStr - 結束時間字串 (HH:mm)
+         * @returns {Promise<number>} 計算出的用電量
+         */
+        async function getUsageForDay(day, startTimeStr, endTimeStr) {
+            const [startHour, startMinute] = startTimeStr.split(':').map(Number);
+            const [endHour, endMinute] = endTimeStr.split(':').map(Number);
+
+            const startDate = new Date(day);
+            startDate.setHours(startHour, startMinute, 0, 0);
+
+            const endDate = new Date(day);
+            endDate.setHours(endHour, endMinute, 59, 999);
+
+            // 平行發送兩個請求，以提高效率
+            const [startValue, endValue] = await Promise.all([
+                fetchClosestValue(startDate),
+                fetchClosestValue(endDate)
+            ]);
+
+            if (startValue !== null && endValue !== null) {
+                return endValue - startValue;
+            }
+            return 0;
+        }
+
+        /**
+         * 主函式，獲取所有數據並更新介面
+         */
+        async function fetchData() {
+            deviceIdElement.textContent = DEVICE_NAME;
+            refreshButton.disabled = true;
+            refreshButton.textContent = '更新中...';
+
+            const today = new Date();
+            const yesterday = new Date();
+            yesterday.setDate(yesterday.getDate() - 1);
+
+            try {
+                const [todayUsage, yesterdayUsage] = await Promise.all([
+                    getUsageForDay(today, todayStartTimeInput.value, todayEndTimeInput.value),
+                    getUsageForDay(yesterday, yesterdayStartTimeInput.value, yesterdayEndTimeInput.value)
+                ]);
+
+                todayValueElement.textContent = todayUsage.toFixed(2);
+                yesterdayValueElement.textContent = yesterdayUsage.toFixed(2);
+                
+                const now = new Date();
+                currentTimeElement.textContent = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+            } catch (error) {
+                console.error("Failed to fetch data:", error);
+                deviceIdElement.textContent = "數據獲取失敗";
+            } finally {
+                refreshButton.disabled = false;
+                refreshButton.textContent = '更新數據';
+            }
+        }
+
+        // --- 事件監聽與自動刷新 ---
+        refreshButton.addEventListener('click', fetchData);
+        fetchData(); // 頁面載入時立即執行一次
+        setInterval(fetchData, 300000); // 每 5 分鐘自動刷新
+    </script>
+</body>
+</html>

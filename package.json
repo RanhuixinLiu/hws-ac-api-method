@@ -1,0 +1,15 @@
+{
+  "name": "hws-ac-api-method",
+  "version": "1.0.0",
+  "description": "A proxy for the electricity API",
+  "main": "api/proxy.js",
+  "dependencies": {
+    "crypto-js": "^4.2.0"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
